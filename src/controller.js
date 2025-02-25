@@ -1,7 +1,7 @@
 const { executeQuery } = require("./db/connection");
 
 const fetchAndSaveData = async () => {
-  const BATCH_SIZE = process.env.BATCH_SIZE;
+  const BATCH_SIZE = Math.min(process.env.BATCH_SIZE, 30000); // Respect server limit
   const API_KEY = process.env.DUNE_API_KEY;
   const QUERY_ID = process.env.DUNE_QUERY_ID;
   let totalProcessed = 0;
@@ -11,36 +11,20 @@ const fetchAndSaveData = async () => {
     let hasMoreData = true;
     let offset = 0;
 
-    // First, get total count
-    const countOptions = {
-      method: "GET",
-      headers: {
-        "X-DUNE-API-KEY": API_KEY,
-      },
-    };
-    const countUrl = `https://api.dune.com/api/v1/query/${QUERY_ID}/results?limit=1`;
-    const countResponse = await fetch(countUrl, countOptions);
-    const countData = await countResponse.json();
-    const totalRows = countData.result.metadata.total_row_count;
-
-    console.log(`Total rows to process: ${totalRows.toLocaleString()}`);
-
     while (hasMoreData) {
-      const options = {
-        method: "GET",
-        headers: {
-          "X-DUNE-API-KEY": API_KEY,
-        },
-      };
-
       const queryParams = new URLSearchParams({
         limit: BATCH_SIZE,
         offset: offset,
+        allow_partial_results: "true", // Always allow partial results
       });
 
       const url = `https://api.dune.com/api/v1/query/${QUERY_ID}/results?${queryParams}`;
 
-      const response = await fetch(url, options);
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { "X-DUNE-API-KEY": API_KEY },
+      });
+
       const data = await response.json();
 
       if (!data.result || !data.result.rows || data.result.rows.length === 0) {
@@ -48,8 +32,11 @@ const fetchAndSaveData = async () => {
         continue;
       }
 
+      const rows = data.result.rows;
+      const totalRows = data.result.metadata.total_row_count;
+
       // Create batch insert query
-      const valueStrings = data.result.rows
+      const valueStrings = rows
         .map(
           (_, index) =>
             `($${index * 12 + 1}, $${index * 12 + 2}, $${index * 12 + 3}, $${
@@ -80,7 +67,7 @@ const fetchAndSaveData = async () => {
         ON CONFLICT (swap_transaction_id) DO NOTHING
       `;
 
-      const params = data.result.rows.flatMap((row) => [
+      const params = rows.flatMap((row) => [
         row.block_slot,
         row.block_time,
         row.token_address,
@@ -97,7 +84,7 @@ const fetchAndSaveData = async () => {
 
       await executeQuery(query, params);
 
-      totalProcessed += data.result.rows.length;
+      totalProcessed += rows.length;
       const progressPercent = ((totalProcessed / totalRows) * 100).toFixed(2);
 
       // Clear line and update progress
@@ -105,7 +92,7 @@ const fetchAndSaveData = async () => {
         `\rProgress: ${progressPercent}% (${totalProcessed.toLocaleString()}/${totalRows.toLocaleString()} rows)`
       );
 
-      offset += parseInt(BATCH_SIZE);
+      offset += rows.length; // Use actual rows returned instead of BATCH_SIZE
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
 
