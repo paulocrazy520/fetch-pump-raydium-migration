@@ -8,7 +8,9 @@ const BATCH_SIZE = 1000; // Adjust based on your memory constraints
 const fetchAndSaveData = async () => {
   try {
     console.log("Fetching data from Dune...");
-    const query_result = await dune.getLatestResult({ queryId: 4772663 });
+    const query_result = await dune.getLatestResult({
+      queryId: process.env.DUNE_QUERY_ID,
+    });
     const rows = query_result.result.rows;
     const totalRows = rows.length;
 
