@@ -5,13 +5,12 @@ const fetchAndSaveData = async () => {
   const DB_BATCH_SIZE = 1000; // Database insert size
   const API_KEY = process.env.DUNE_API_KEY;
   const QUERY_ID = process.env.DUNE_QUERY_ID;
-  let totalProcessed = 0;
 
   try {
     console.log("Starting data fetch with pagination...");
     let hasMoreData = true;
     let offset = 0;
-    totalProcessed = offset;
+    let totalProcessed = offset;
     const queryParams = new URLSearchParams({
       limit: API_BATCH_SIZE,
       offset: offset,
@@ -21,6 +20,12 @@ const fetchAndSaveData = async () => {
     let url = `https://api.dune.com/api/v1/query/${QUERY_ID}/results?${queryParams}`;
 
     while (hasMoreData) {      
+      if (!url) {
+        console.log("\nURL is not defined, It seems completed.");
+        hasMoreData = false;
+        continue;
+      }
+
       const response = await fetch(url, {
         method: "GET",
         headers: { "X-DUNE-API-KEY": API_KEY },
