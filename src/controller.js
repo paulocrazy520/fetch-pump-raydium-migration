@@ -1,27 +1,55 @@
-const { DuneClient } = require("@duneanalytics/client-sdk");
 const { executeQuery } = require("./db/connection");
 
-const dune = new DuneClient("gHLx5IHcZeEigW6qjmLXiajEMFdd4CYh");
-
-const BATCH_SIZE = 1000; // Adjust based on your memory constraints
-
 const fetchAndSaveData = async () => {
+  const BATCH_SIZE = process.env.BATCH_SIZE;
+  const API_KEY = process.env.DUNE_API_KEY;
+  const QUERY_ID = process.env.DUNE_QUERY_ID;
+  let totalProcessed = 0;
+
   try {
-    console.log("Fetching data from Dune...");
-    const query_result = await dune.getLatestResult({
-      queryId: process.env.DUNE_QUERY_ID,
-    });
-    const rows = query_result.result.rows;
-    const totalRows = rows.length;
+    console.log("Starting data fetch with pagination...");
+    let hasMoreData = true;
+    let offset = 0;
+
+    // First, get total count
+    const countOptions = {
+      method: "GET",
+      headers: {
+        "X-DUNE-API-KEY": API_KEY,
+      },
+    };
+    const countUrl = `https://api.dune.com/api/v1/query/${QUERY_ID}/results?limit=1`;
+    const countResponse = await fetch(countUrl, countOptions);
+    const countData = await countResponse.json();
+    const totalRows = countData.result.metadata.total_row_count;
 
     console.log(`Total rows to process: ${totalRows.toLocaleString()}`);
 
-    // Process in batches
-    for (let i = 0; i < totalRows; i += BATCH_SIZE) {
-      const batch = rows.slice(i, i + BATCH_SIZE);
+    while (hasMoreData) {
+      const options = {
+        method: "GET",
+        headers: {
+          "X-DUNE-API-KEY": API_KEY,
+        },
+      };
 
-      // Create parameterized query for the batch
-      const valueStrings = batch
+      const queryParams = new URLSearchParams({
+        limit: BATCH_SIZE,
+        offset: offset,
+      });
+
+      const url = `https://api.dune.com/api/v1/query/${QUERY_ID}/results?${queryParams}`;
+
+      const response = await fetch(url, options);
+      const data = await response.json();
+
+      if (!data.result || !data.result.rows || data.result.rows.length === 0) {
+        hasMoreData = false;
+        continue;
+      }
+
+      // Create batch insert query
+      const valueStrings = data.result.rows
         .map(
           (_, index) =>
             `($${index * 12 + 1}, $${index * 12 + 2}, $${index * 12 + 3}, $${
@@ -52,8 +80,7 @@ const fetchAndSaveData = async () => {
         ON CONFLICT (swap_transaction_id) DO NOTHING
       `;
 
-      // Flatten the batch into a single array of parameters
-      const params = batch.flatMap((row) => [
+      const params = data.result.rows.flatMap((row) => [
         row.block_slot,
         row.block_time,
         row.token_address,
@@ -68,23 +95,26 @@ const fetchAndSaveData = async () => {
         row.top10_percent,
       ]);
 
-      // Execute batch insert
       await executeQuery(query, params);
 
-      // Log progress
-      const progress = Math.round(((i + batch.length) / totalRows) * 100);
-      const processedRows = (i + batch.length).toLocaleString();
+      totalProcessed += data.result.rows.length;
+      const progressPercent = ((totalProcessed / totalRows) * 100).toFixed(2);
+
+      // Clear line and update progress
       process.stdout.write(
-        `Progress: ${progress}% (${processedRows}/${totalRows.toLocaleString()} rows)\r`
+        `\rProgress: ${progressPercent}% (${totalProcessed.toLocaleString()}/${totalRows.toLocaleString()} rows)`
       );
 
-      // Optional: Add small delay to prevent overwhelming the database
+      offset += parseInt(BATCH_SIZE);
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
 
-    console.log("\nCompleted saving all records to database");
+    console.log("\nData import completed successfully!");
+    console.log(
+      `Final count: ${totalProcessed.toLocaleString()} rows processed`
+    );
   } catch (error) {
-    console.error("Error fetching or saving data:", error);
+    console.error("\nError fetching and saving data:", error);
     throw error;
   }
 };
